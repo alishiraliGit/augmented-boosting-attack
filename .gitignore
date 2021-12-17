@@ -1,0 +1,5 @@
+results
+venv
+.idea
+*.pyc
+*.cpython-38.pyc
