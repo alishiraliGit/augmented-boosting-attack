@@ -5,6 +5,7 @@ from matplotlib import pyplot as plt
 from pgmpy.models import FactorGraph
 from pgmpy.factors.discrete import DiscreteFactor
 from pgmpy.inference import BeliefPropagation
+from sklearn.cluster import SpectralClustering
 
 from utils.math_tools import bits2, argmaxs
 from evaluators import Evaluator, Kaggle
@@ -433,6 +434,299 @@ class KNNMAPBoostingAttacker(BoostingAttacker):
     def to_string(self):
         return r'MAP($k=%d, N=%d, expl=%.1f, conf=%0.2f$)' \
                % (self.k, self.N, self.exploration, self.conf)
+
+
+class KNNMAPBoostingAttackerDiscrete(BoostingAttacker):
+    def __init__(self, evaluator: Evaluator,
+                 uu_dist, ii_dist, ui_ordered_list,
+                 subset_size, k, exploration, conf,
+                 compare_to_min_loss=False):
+        super().__init__(evaluator, compare_to_min_loss)
+
+        # Data
+        self.uu_dist = uu_dist
+        self.ii_dist = ii_dist
+        self.ui_ordered_list = ui_ordered_list  # List of (u, i) chronologically ordered
+
+        self.n_user = self.uu_dist.shape[0]
+        self.n_item = self.ii_dist.shape[0]
+
+        # Constants
+        self.subset_size = subset_size
+        self.k = k
+        self.exploration = exploration
+        self.conf = conf
+
+        # Processed from data
+        self.groups = None
+        self.n_group = None
+        self.g_map_est_dic = None
+        self.g_top_dic = None
+
+    def dist(self, u1, i1, u2, i2):
+        return np.sqrt(self.uu_dist[u1, u2]**2 + self.ii_dist[i1, i2]**2)
+
+    def score(self, user, item, other_nodes: np.array, other_labels: np.array):
+        dists = np.zeros((len(other_nodes),))
+        for idx, other_node in enumerate(other_nodes):
+            other_u, other_i = self.ui_ordered_list[other_node]
+
+            dists[idx] = self.dist(user, item, other_u, other_i)
+
+        top_labels = other_labels[np.argsort(dists)[:self.k]]
+        return (np.mean(top_labels) >= 0.5) * 1
+
+    def effective_set(self, user, other_nodes: np.array):
+        eff_set = set()
+        n_other = len(other_nodes)
+        for poss_i in range(self.n_item):
+            dists = np.zeros((n_other,))*np.nan
+
+            for idx_other, other_node in enumerate(other_nodes):
+                other_u, other_i = self.ui_ordered_list[other_node]
+                dists[idx_other] = self.dist(user, poss_i, other_u, other_i)
+
+            top_other_indices = np.argsort(dists)[:self.k]
+
+            eff_set.update(other_nodes[top_other_indices])
+
+        return eff_set
+
+    def find_adjacency_matrix(self, verbose=False):
+        n_node = len(self.ui_ordered_list)
+        adj_mat = np.zeros((n_node, n_node))
+        for node in tqdm(range(n_node), desc='find groups: find adj_mat', disable=not verbose):
+            if node == 0:
+                continue
+
+            user, _item = self.ui_ordered_list[node]
+
+            eff_set = self.effective_set(user, np.array(range(node)))
+
+            adj_mat[node, list(eff_set)] = 1
+
+        return adj_mat
+
+    def find_groups_with_spectral_clustering(self, n_group, verbose=False):
+        # Find adj_mat
+        adj_mat_ = self.find_adjacency_matrix(verbose=verbose)
+        adj_mat_sym_ = ((adj_mat_ + adj_mat_.T) > 0)*1
+
+        # Cluster
+        clust_ = SpectralClustering(n_clusters=n_group, affinity='precomputed', random_state=1)
+        clust_.fit(adj_mat_sym_)
+
+        # Post process
+        groups = []
+        for g in range(n_group):
+            groups.append(np.where(clust_.labels_ == g)[0])
+
+        return groups
+
+    def find_groups(self, verbose=False):
+        candidate_nodes = set(range(self.n_sample))
+
+        groups = []
+
+        with tqdm(total=self.n_sample, desc='find groups', disable=not verbose) as pbar:
+            while len(candidate_nodes) > 0:
+                candidate_nodes_np = np.array(list(candidate_nodes))
+
+                # Select a random node
+                node = rng.choice(candidate_nodes_np)
+                user, _item = self.ui_ordered_list[node]
+
+                # Init. a group
+                group = {node, }
+
+                # Find 1st level effective nodes
+                candidates_older = candidate_nodes_np[candidate_nodes_np < node]
+                eff_set = self.effective_set(user, candidates_older)
+
+                # Select a random subset of effective nodes
+                eff_sublist = rng.choice(list(eff_set), size=np.minimum(len(eff_set), self.subset_size), replace=False)
+
+                # Update the group
+                group.update(eff_sublist)
+
+                # Update all groups
+                groups.append(np.sort(list(group)))
+
+                # Drop the group members from the candidates
+                candidate_nodes -= group
+
+                pbar.update(len(group))
+
+        return groups
+
+    def factor(self, node, eff_set):
+        eff_list = np.array(list(eff_set))
+        n_eff = len(eff_list)
+
+        # Extract node's spec
+        user, item = self.ui_ordered_list[node]
+
+        # Init.
+        score_mat = np.zeros((2,)*n_eff + (self.n_item,))
+        p_mat = np.zeros((2,)*n_eff)
+
+        # Loop over all possible labels of the effective set
+        for num in range(2**n_eff):
+            eff_labels = np.array(bits2(num, n_eff))
+
+            # Loop over possible items
+            for poss_i in range(self.n_item):
+                score_mat[tuple(eff_labels) + (poss_i,)] = \
+                    (1 - self.exploration)*self.score(user, poss_i, eff_list, eff_labels) + self.exploration
+
+            # Calc the probability of being selected
+            score_sum = np.sum(score_mat[tuple(eff_labels)])
+            score_i = score_mat[tuple(eff_labels) + (item,)]
+            if score_sum == 0:
+                p_mat[tuple(eff_labels)] = 1
+            else:
+                p_mat[tuple(eff_labels)] = score_i/score_sum * self.n_item
+
+        # Create a factor node
+        phi = DiscreteFactor(variables=['dummy%d' % node] + ['n%d' % eff_node for eff_node in eff_list],
+                             cardinality=[1] + [2]*n_eff,
+                             values=p_mat.reshape((-1,), order='C'))  # Order should be C to be compatible with pgmpy
+
+        return phi, score_mat, p_mat
+
+    def map_estimate(self, g: int, verbose=False):
+        group = self.groups[g]
+
+        assert len(group) > 1  # ToDo
+
+        # Find effective sets
+        node_eff_set_dic = {}
+        all_eff_nodes_set = set()
+        for idx, node in enumerate(group):
+            if idx == 0:
+                continue
+            user, _item = self.ui_ordered_list[node]
+            node_eff_set_dic[node] = self.effective_set(user, group[:idx])
+            all_eff_nodes_set.update(node_eff_set_dic[node])
+
+        if verbose:
+            print('There are totally %d effective nodes' % len(all_eff_nodes_set))
+
+        # Init. a factor graph
+        G = FactorGraph()
+
+        # Add variable nodes
+        dummy_nodes_str = ['dummy%d' % node for node in group[1:]]
+        eff_nodes_str = ['n%d' % eff_node for eff_node in all_eff_nodes_set]
+        G.add_nodes_from(dummy_nodes_str + eff_nodes_str)
+
+        # Add a dummy factor (ToDo: this is my solution to no sepset exception)
+        dummy_phi = DiscreteFactor(
+            variables=dummy_nodes_str,
+            cardinality=[1]*len(dummy_nodes_str),
+            values=np.ones((1,)))
+        G.add_factors(dummy_phi)
+        G.add_edges_from([(dummy_node_str, dummy_phi) for dummy_node_str in dummy_nodes_str])
+
+        # Add factor nodes
+        for node in tqdm(group[1:], desc='group %d:add factor nodes' % g, disable=not verbose):
+            phi, _, _ = self.factor(node, node_eff_set_dic[node])
+
+            G.add_factors(phi)
+            G.add_edges_from([('dummy%d' % node, phi)])
+            G.add_edges_from([('n%d' % eff_node, phi) for eff_node in node_eff_set_dic[node]])
+
+        if verbose:
+            print(G)
+            print('Model checked: %s' % G.check_model())
+
+        # Init. a BP
+        if verbose:
+            print('Init. BP ...')
+
+        BP = BeliefPropagation(G)
+
+        # Query BP
+        q = BP.query(variables=['n%d' % eff_node for eff_node in all_eff_nodes_set], show_progress=verbose)
+
+        # Process results
+        variables = np.array([int(var[1:]) for var in q.variables])
+
+        return variables, q.values
+
+    def find_map_estimates_for_groups(self, verbose=False):
+        g_dic = {}
+        for g in tqdm(range(self.n_group), desc='MAP estimate', disable=not verbose):
+            if len(self.groups[g]) == 1:
+                continue
+
+            try:
+                variables, values = self.map_estimate(g, verbose=False)
+                g_dic[g] = {
+                    'vars': variables,
+                    'vals': values
+                }
+
+            except Exception as e:
+                print('For group %d:' % g, self.groups[g])
+                print(e)
+
+        return g_dic
+
+    def find_most_probables(self, verbose=False):
+        g_top_dic = {}
+        for g, dic in tqdm(self.g_map_est_dic.items(), desc='find most probables', disable=not verbose):
+            rs, ps = argmaxs(dic['vals'], self.conf)
+            g_top_dic[g] = {
+                'vars': dic['vars'],
+                'rs': rs,
+                'ps': ps,
+            }
+        return g_top_dic
+
+    def fit(self, verbose=False):
+        self.groups = self.find_groups(verbose=verbose)
+        self.n_group = len(self.groups)
+
+        self.g_map_est_dic = self.find_map_estimates_for_groups(verbose=verbose)
+
+        self.g_top_dic = self.find_most_probables(verbose=verbose)
+
+        return self
+
+    def copy(self, ev=None):
+        if ev is None:
+            ev = self.evaluator
+
+        att = KNNMAPBoostingAttackerDiscrete(
+            evaluator=ev,
+            uu_dist=self.uu_dist, ii_dist=self.ii_dist, ui_ordered_list=self.ui_ordered_list,
+            subset_size=self.subset_size, k=self.k, exploration=self.exploration, conf=self.conf,
+            compare_to_min_loss=self.compare_to_min_loss
+        )
+
+        att.groups = self.groups
+        att.g_map_est_dic = self.g_map_est_dic
+        att.g_top_dic = self.g_top_dic
+
+        return att
+
+    def _toss(self):
+        u = np.zeros((self.n_sample,))*np.nan
+
+        for g, dic in self.g_top_dic.items():
+            idx = rng.choice(range(dic['rs'].shape[0]), p=dic['ps']/np.sum(dic['ps']))
+            u[dic['vars']] = dic['rs'][idx]
+
+        # Fill nans
+        nan_indices = np.argwhere(np.isnan(u))[:, 0]
+        u[nan_indices] = np.random.randint(0, 2, size=(len(nan_indices),))
+
+        return u.astype(int)
+
+    def to_string(self):
+        return r'MAP(sub_size=%d, $k=%d, expl=%.1f, conf=%0.2f$)' \
+               % (self.subset_size, self.k, self.exploration, self.conf)
 
 
 if __name__ == '__main__':
