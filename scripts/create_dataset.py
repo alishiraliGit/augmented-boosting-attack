@@ -34,17 +34,17 @@ if __name__ == '__main__':
 
     # Simulator
     simul_sett = {
-        'n_c_star': 3,
+        'n_c_star': 300,
         'k_star': 1,
-        'n_sample': 15,
+        'n_sample': 2000,
         'k': 1,
-        'exploration': 1,
+        'exploration': 0.1,
     }
 
     # Dataset
     data_sett = {
         'n_run': 100,
-        'n_ds': 3,
+        'n_ds': 500,
     }
 
     # ----- Instantiate a simulator -----

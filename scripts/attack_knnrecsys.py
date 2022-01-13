@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 from utils.data_handler import load_knnrecsys_synthetic_data
 from evaluators import Kaggle, Ladder
 from attackers import BoostingAttacker, CorrelatedBoostingAttacker,\
-    AdaptiveRandomWindowSearchBoostingAttacker, KNNMAPBoostingAttacker
+    RandomWindowSearchBoostingAttacker, KNNPosteriorBoostingAttacker
 
 if __name__ == '__main__':
     # ----- Settings -----
@@ -14,16 +14,16 @@ if __name__ == '__main__':
     load_path = os.path.join('..', 'data')
     data_sett = {
         'n_run': 100,
-        'n_sample': 1000,
-        'n_ds': 200,
-        'n_c_star': 100,
+        'n_sample': 2000,
+        'n_ds': 500,
+        'n_c_star': 300,
         'k_star': 1,
         'k': 1,
         'exploration': 0.1,
     }
 
     # General
-    n_run = 30
+    n_run = 50
     n_rept = 5
     n_query = 100
 
@@ -47,12 +47,12 @@ if __name__ == '__main__':
     attacker_constructors = [
         lambda e: BoostingAttacker(e, compare_to_min_loss=True),
         # lambda e: CorrelatedBoostingAttacker(e, gamma=0.2, compare_to_min_loss=True),
-        lambda e: AdaptiveRandomWindowSearchBoostingAttacker(e, w=21, alpha=0.5, compare_to_min_loss=True),
-        # lambda e: KNNMAPBoostingAttacker(e, centers=data_dic['data']['ds_centers'][run],
-        #                                 k=1, N=4, exploration=0.1, conf=0.99,
-        #                                 do_grouping=True, grouping_depth=1,
-        #                                 compare_to_min_loss=True,
-        #                                 verbose=False)
+        lambda e: RandomWindowSearchBoostingAttacker(e, w=21, alpha=0.5, compare_to_min_loss=True),
+        # lambda e: KNNPosteriorBoostingAttacker(e, centers=data_dic['data']['ds_centers'][run],
+        #                                       k=1, N=20, exploration=0.1, conf=0.99,
+        #                                       do_grouping=True, grouping_depth=1,
+        #                                       compare_to_min_loss=True,
+        #                                       verbose=False)
     ]
     n_att = len(attacker_constructors)
 

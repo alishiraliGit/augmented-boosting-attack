@@ -2,8 +2,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from evaluators import Kaggle
-from attackers import BoostingAttacker, KNNMAPBoostingAttackerDiscrete
+from evaluators import Kaggle, Ladder
+from attackers import BoostingAttacker, KNNPosteriorBoostingAttackerDiscrete, RandomWindowSearchBoostingAttacker
 from utils.data_handler import *
 from scripts.create_dataset import downsample_balanced_order_preserved
 
@@ -45,18 +45,18 @@ if __name__ == '__main__':
     load_path_ = os.path.join('..', 'data', 'ml-100k')
 
     # Dataset
-    part_ = 1
+    part_ = 3
     file_name_ = 'u%d.test' % part_
 
     do_filter = False
-    max_u_ = 100  # 25
-    max_i_ = 150  # 30
+    max_u_ = 100
+    max_i_ = 150
 
-    n_ds_ = 100  # 30
+    n_ds_ = 500  # 100
 
     # General
-    n_rept_ = 1000
-    n_query_ = 10
+    n_rept_ = 500
+    n_query_ = 100
 
     # ----- Load data -----
     edges_ = get_edge_list_from_file_ml100k(load_path_, file_name_, do_sort=True)
@@ -90,19 +90,21 @@ if __name__ == '__main__':
 
     # ----- Choose evaluators -----
     ev_constructors_ = [
-        lambda: Kaggle(y_ds_, decimals=8),
+        lambda: Kaggle(y_ds_, decimals=3),
+        lambda: Ladder(y_ds_, eta=0.02),
     ]
     n_ev_ = len(ev_constructors_)
 
     # ----- Choose attackers -----
     # Pretrain KNN MAP
-    knn_map_ = KNNMAPBoostingAttackerDiscrete(ev_constructors_[0](), uu_dist_, ii_dist_, ui_ordered_list_ds_,
-                                              subset_size=7, k=3, exploration=0.1, conf=0.99,
-                                              compare_to_min_loss=False)
+    knn_map_ = KNNPosteriorBoostingAttackerDiscrete(ev_constructors_[0](), uu_dist_, ii_dist_, ui_ordered_list_ds_,
+                                                    subset_size=7, k=3, exploration=0.1, conf=0.99,
+                                                    compare_to_min_loss=True)
     knn_map_.fit(verbose=True)
 
     att_constructors_ = [
-        lambda: BoostingAttacker(ev_, compare_to_min_loss=False),
+        lambda: BoostingAttacker(ev_, compare_to_min_loss=True),
+        lambda: RandomWindowSearchBoostingAttacker(ev_, w=21, alpha=0.5, compare_to_min_loss=True),
         lambda: knn_map_.copy(ev_)
     ]
     n_att_ = len(att_constructors_)

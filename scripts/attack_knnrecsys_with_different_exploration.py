@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 from utils.data_handler import load_knnrecsys_synthetic_data
 from evaluators import Kaggle, Ladder
 from attackers import BoostingAttacker, CorrelatedBoostingAttacker,\
-    AdaptiveRandomWindowSearchBoostingAttacker, KNNMAPBoostingAttacker
+    RandomWindowSearchBoostingAttacker, KNNPosteriorBoostingAttacker
 
 if __name__ == '__main__':
     # ----- Settings -----
@@ -53,7 +53,7 @@ if __name__ == '__main__':
 
     # ----- Choose attackers -----
     attacker_constructor = \
-        lambda e: AdaptiveRandomWindowSearchBoostingAttacker(e, w=21, alpha=0.5, compare_to_min_loss=True)
+        lambda e: RandomWindowSearchBoostingAttacker(e, w=21, alpha=0.5, compare_to_min_loss=True)
 
     # ----- Big loop -----
     print('Attacking ...')

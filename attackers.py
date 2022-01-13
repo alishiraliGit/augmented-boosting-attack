@@ -71,7 +71,9 @@ class BoostingAttacker(Attacker):
         self.Rs.append(R)
 
         # Update I
-        if (R < 0.5) and (not self.compare_to_min_loss or R < self.R_min):
+        if t == 0:
+            self.I.append(t)
+        elif (R < 0.5) and (not self.compare_to_min_loss or R < self.R_min):
             self.I.append(t)
 
         # Update minimum Rs
@@ -83,14 +85,18 @@ class BoostingAttacker(Attacker):
     def predict(self):
         if len(self.I) == 0:
             return np.nan
+        if len(self.I) == 1:
+            from_idx = 0
+        else:
+            from_idx = 1
 
-        return (np.mean(self.U[self.I], axis=0) > 0.5)*1
+        return (np.mean(self.U[self.I[from_idx:]], axis=0) > 0.5)*1
 
     def to_string(self):
         return r'Boosting'
 
 
-class AdaptiveRandomWindowSearchBoostingAttacker(Attacker):
+class RandomWindowSearchBoostingAttacker(Attacker):
     def __init__(self, evaluator: Evaluator, w, alpha, compare_to_min_loss=False):
         super().__init__(evaluator)
 
@@ -142,7 +148,9 @@ class AdaptiveRandomWindowSearchBoostingAttacker(Attacker):
         self.Rs.append(R)
 
         # Update I
-        if (R < 0.5) and (not self.compare_to_min_loss or R < self.R_min):
+        if t == 0:
+            self.I.append(t)
+        elif (R < 0.5) and (not self.compare_to_min_loss or R < self.R_min):
             self.I.append(t)
 
         # Update minimum Rs
@@ -161,8 +169,12 @@ class AdaptiveRandomWindowSearchBoostingAttacker(Attacker):
     def predict(self):
         if len(self.I) == 0:
             return np.nan
+        if len(self.I) == 1:
+            from_idx = 0
+        else:
+            from_idx = 1
 
-        return (np.mean(self.U[self.I], axis=0) > 0.5)*1
+        return (np.mean(self.U[self.I[from_idx:]], axis=0) > 0.5)*1
 
     def to_string(self):
         return r'WBoost($w=%d,\alpha=%.2f$)' % (self.w, self.alpha)
@@ -200,7 +212,7 @@ class CorrelatedBoostingAttacker(BoostingAttacker):
         return r'CorrBoost($\gamma=%.2f$)' % self.gamma
 
 
-class KNNMAPBoostingAttacker(BoostingAttacker):
+class KNNPosteriorBoostingAttacker(BoostingAttacker):
     def __init__(self, evaluator: Evaluator, centers, k, N, exploration, conf,
                  do_grouping=True, grouping_depth=1,
                  compare_to_min_loss=False,
@@ -325,7 +337,7 @@ class KNNMAPBoostingAttacker(BoostingAttacker):
         all_eff_nodes = set()
         for node in range(n_sample):
             u, i = centers[node]
-            node_eff_dic[node] = KNNMAPBoostingAttacker.effective_set(u, centers[:node], k, N)
+            node_eff_dic[node] = KNNPosteriorBoostingAttacker.effective_set(u, centers[:node], k, N)
             all_eff_nodes.update(node_eff_dic[node])
 
         if verbose:
@@ -352,7 +364,7 @@ class KNNMAPBoostingAttacker(BoostingAttacker):
             print('Adding factor nodes ...')
 
         for node in tqdm(range(1, n_sample), disable=not verbose):
-            phi, _, _ = KNNMAPBoostingAttacker.factor(node, centers, node_eff_dic, k, N, exploration)
+            phi, _, _ = KNNPosteriorBoostingAttacker.factor(node, centers, node_eff_dic, k, N, exploration)
 
             G.add_factors(phi)
             G.add_edges_from([('dummy%d' % node, phi)])
@@ -432,11 +444,11 @@ class KNNMAPBoostingAttacker(BoostingAttacker):
         return u.astype(int)
 
     def to_string(self):
-        return r'MAP($k=%d, N=%d, expl=%.1f, conf=%0.2f$)' \
-               % (self.k, self.N, self.exploration, self.conf)
+        return r'PostBoost($k=%d, expl=%.1f$)' \
+               % (self.k, self.exploration)
 
 
-class KNNMAPBoostingAttackerDiscrete(BoostingAttacker):
+class KNNPosteriorBoostingAttackerDiscrete(BoostingAttacker):
     def __init__(self, evaluator: Evaluator,
                  uu_dist, ii_dist, ui_ordered_list,
                  subset_size, k, exploration, conf,
@@ -698,7 +710,7 @@ class KNNMAPBoostingAttackerDiscrete(BoostingAttacker):
         if ev is None:
             ev = self.evaluator
 
-        att = KNNMAPBoostingAttackerDiscrete(
+        att = KNNPosteriorBoostingAttackerDiscrete(
             evaluator=ev,
             uu_dist=self.uu_dist, ii_dist=self.ii_dist, ui_ordered_list=self.ui_ordered_list,
             subset_size=self.subset_size, k=self.k, exploration=self.exploration, conf=self.conf,
@@ -725,8 +737,8 @@ class KNNMAPBoostingAttackerDiscrete(BoostingAttacker):
         return u.astype(int)
 
     def to_string(self):
-        return r'MAP(sub_size=%d, $k=%d, expl=%.1f, conf=%0.2f$)' \
-               % (self.subset_size, self.k, self.exploration, self.conf)
+        return r'PostBoost($k=%d, expl=%.1f, z=%d$)' \
+               % (self.k, self.exploration, self.subset_size)
 
 
 if __name__ == '__main__':
@@ -755,12 +767,12 @@ if __name__ == '__main__':
                          [1, 1],
                          [0.6, 0]])
 
-    variables_, values_ = KNNMAPBoostingAttacker.map_estimate(centers_,
-                                                              k=1, N=50, exploration=0.1, verbose=False)
+    variables_, values_ = KNNPosteriorBoostingAttacker.map_estimate(centers_,
+                                                                    k=1, N=50, exploration=0.1, verbose=False)
 
     ev_ = Kaggle(y_, decimals=5)
-    att_ = KNNMAPBoostingAttacker(ev_, centers_, k=1, N=50, exploration=0.1, conf=0.99, do_grouping=False,
-                                  compare_to_min_loss=True, verbose=True)
+    att_ = KNNPosteriorBoostingAttacker(ev_, centers_, k=1, N=50, exploration=0.1, conf=0.99, do_grouping=False,
+                                        compare_to_min_loss=True, verbose=True)
 
     U_ = np.zeros((10000, 3)).astype(int)
     for sample_ in range(U_.shape[0]):
